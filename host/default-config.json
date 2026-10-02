@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "settings": {
+    "toggleKey": "F6",
+    "minecraftMenuKey": "O",
+    "verboseLogging": false,
+    "minecraftModeFpsCap": 60,
+    "minecraftWalkSpeed": 6.0
+  }
+}

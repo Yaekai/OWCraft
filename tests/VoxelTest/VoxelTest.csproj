@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Outer Wilds</GameDir>
+    <Managed>$(GameDir)\OuterWilds_Data\Managed</Managed>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="OWML" Version="2.16.3" />
+    <Reference Include="..\..\host\bin\Release\OWCraft.dll" />
+    <Reference Include="$(Managed)\UnityEngine.CoreModule.dll" />
+    <Reference Include="$(Managed)\UnityEngine.PhysicsModule.dll" />
+  </ItemGroup>
+</Project>
