@@ -1,3 +1,42 @@
+diff --git a/fabric/gradle.properties b/fabric/gradle.properties
+index 3d5a390..e205c81 100644
+--- a/fabric/gradle.properties
++++ b/fabric/gradle.properties
+@@ -10,7 +10,7 @@ loader_version=0.19.5
+ loom_version=1.18-SNAPSHOT
+ 
+ # Mod Properties
+-version=0.1.2
++version=0.1.2+owcraft.1
+ group=dev.skycraft
+ 
+ # Dependencies
+diff --git a/fabric/src/client/java/dev/skycraft/client/DestructionToggle.java b/fabric/src/client/java/dev/skycraft/client/DestructionToggle.java
+index 8a01803..b5e3c0c 100644
+--- a/fabric/src/client/java/dev/skycraft/client/DestructionToggle.java
++++ b/fabric/src/client/java/dev/skycraft/client/DestructionToggle.java
+@@ -70,7 +70,7 @@ public final class DestructionToggle {
+ 			SkyCraft.LOG.warn("SkyCraft: couldn't read {}", file(), e);
+ 			return;
+ 		}
+-		SkyDig.destruction = !"false".equalsIgnoreCase(props.getProperty(KEY, "true").trim());
++		SkyDig.destruction = !"false".equalsIgnoreCase(props.getProperty(KEY, "false").trim());
+ 	}
+ 
+ 	/** Rewrites only its own line, keeping the file's comments and other settings (join=). */
+diff --git a/fabric/src/client/java/dev/skycraft/client/DiscordPresence.java b/fabric/src/client/java/dev/skycraft/client/DiscordPresence.java
+index f90b2c7..da3adb0 100644
+--- a/fabric/src/client/java/dev/skycraft/client/DiscordPresence.java
++++ b/fabric/src/client/java/dev/skycraft/client/DiscordPresence.java
+@@ -28,7 +28,7 @@ import org.jspecify.annotations.Nullable;
+  */
+ public final class DiscordPresence {
+ 	// The SkyCraft application on Discord's developer portal (public; not a secret).
+-	private static final String APP_ID = System.getProperty("skycraft.discordAppId", "1554889902309642280");
++	private static final String APP_ID = System.getProperty("skycraft.discordAppId", "0");
+ 	// e4mc's addresses, as it prints them in chat (visible, or only in its click-to-copy action).
+ 	private static final Pattern E4MC_LINK = Pattern.compile("[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.e4mc\\.link", Pattern.CASE_INSENSITIVE);
+ 	private static final int OP_HANDSHAKE = 0, OP_FRAME = 1, OP_CLOSE = 2, OP_PING = 3, OP_PONG = 4;
 diff --git a/fabric/src/client/java/dev/skycraft/client/FrameExporter.java b/fabric/src/client/java/dev/skycraft/client/FrameExporter.java
 index b009df2..67cb10c 100644
 --- a/fabric/src/client/java/dev/skycraft/client/FrameExporter.java
@@ -201,7 +240,7 @@ index 0000000..97ebe7e
 +	}
 +}
 diff --git a/fabric/src/client/java/dev/skycraft/client/SkyClient.java b/fabric/src/client/java/dev/skycraft/client/SkyClient.java
-index 3127e6e..1ec3bf6 100644
+index 3127e6e..7719d13 100644
 --- a/fabric/src/client/java/dev/skycraft/client/SkyClient.java
 +++ b/fabric/src/client/java/dev/skycraft/client/SkyClient.java
 @@ -68,6 +68,7 @@ public final class SkyClient {
@@ -212,6 +251,15 @@ index 3127e6e..1ec3bf6 100644
  		SkyLink.poll();
  		quitWithSkyrim(Minecraft.getInstance());
  		if (START_HIDDEN && !startedHidden) {
+@@ -147,7 +148,7 @@ public final class SkyClient {
+ 	// Minecraft is started with Skyrim (the SKSE plugin launches it), so it goes when that Skyrim has
+ 	// closed for good: saved and shut down the normal way. -Dskycraft.quitWithSkyrim=false keeps it
+ 	// running instead (development: restarting Skyrim without restarting Minecraft).
+-	private static final boolean QUIT_WITH_SKYRIM = Boolean.parseBoolean(System.getProperty("skycraft.quitWithSkyrim", "true"));
++	private static final boolean QUIT_WITH_SKYRIM = Boolean.parseBoolean(System.getProperty("skycraft.quitWithSkyrim", "false"));
+ 	private static long skyrimGoneSince;
+ 	private static long nextSkyrimCheck;
+ 	// Started hidden by Skyrim but never connected: nobody can see or use this Minecraft, and it
 @@ -183,6 +184,7 @@ public final class SkyClient {
  
  	/** Called at the end of every client tick. */
@@ -321,3 +369,31 @@ index 9f909ce..2410e9f 100644
  	}
  
  	private static void resendEverything(Minecraft minecraft, ClientLevel level) {
+diff --git a/fabric/src/main/java/dev/skycraft/link/Proto.java b/fabric/src/main/java/dev/skycraft/link/Proto.java
+index 26b7fe6..34dba58 100644
+--- a/fabric/src/main/java/dev/skycraft/link/Proto.java
++++ b/fabric/src/main/java/dev/skycraft/link/Proto.java
+@@ -11,7 +11,7 @@ public final class Proto {
+ 	public static final int VERSION = 11;
+ 	// A second client on the same PC (multiplayer testing) talks to its own stand-in Skyrim:
+ 	// -Dskycraft.link=Local\SkyCraft_guest (see tools/fake_guest.py).
+-	public static final String MAPPING_NAME = System.getProperty("skycraft.link", "Local\\SkyCraft_v1");
++	public static final String MAPPING_NAME = System.getProperty("skycraft.link", "Local\\OWCraft_v1");
+ 	public static final double UNITS_PER_BLOCK = 70.0;
+ 
+ 	public static final long OFF_HEADER = 0x0;
+diff --git a/fabric/src/main/resources/fabric.mod.json b/fabric/src/main/resources/fabric.mod.json
+index 1e96664..c53af93 100644
+--- a/fabric/src/main/resources/fabric.mod.json
++++ b/fabric/src/main/resources/fabric.mod.json
+@@ -2,8 +2,8 @@
+   "schemaVersion": 1,
+   "id": "skycraft",
+   "version": "${version}",
+-  "name": "SkyCraft",
+-  "description": "Play Skyrim with Minecraft physics, inventory and viewmodels.",
++  "name": "SkyCraft (OWCraft build)",
++  "description": "SkyCraft by chasmlol, patched to be the Minecraft side of OWCraft (Minecraft inside Outer Wilds).",
+   "authors": ["chasmlol"],
+   "contact": {
+     "sources": "https://github.com/chasmlol/SkyCraft"

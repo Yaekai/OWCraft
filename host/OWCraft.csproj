@@ -7,6 +7,9 @@
     <RootNamespace>OWCraft</RootNamespace>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Keep the builder's local folders out of the DLL (the PDB path and source paths). -->
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=/_/OWCraft</PathMap>
     <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Outer Wilds</GameDir>
     <Managed>$(GameDir)\OuterWilds_Data\Managed</Managed>
     <ModsDir Condition="'$(ModsDir)' == ''">$(AppData)\OuterWildsModManager\OWML\Mods\Yaekai.OWCraft</ModsDir>

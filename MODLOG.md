@@ -430,3 +430,28 @@ Neither is copied into this repo.
   - The echo ignores positions below y −64, so a respawn goes to the last spot where the player
     stood.
 - Rebuilt: 0 warnings, 0 errors (host only).
+
+## 2026-10-02: published on GitHub, first release (0.1.0)
+- **Repo:** github.com/Yaekai/OWCraft, MIT.
+  - The SkyCraft changes ship as `guest/skycraft-owcraft.patch`. It applies cleanly to `bfcaf178`
+    and compiles.
+  - The mod id is now `Yaekai.OWCraft`. The installed folder was moved and the config kept.
+- **Privacy:**
+  - The repo history is one commit, signed with GitHub's no-reply address. GitHub's own starter
+    commit, which carried the account's email, was replaced.
+  - The DLL used to embed the builder's local PDB path. `PathMap` + `Deterministic` now record
+    `/_/OWCraft/...` instead.
+  - Repo, zip and jar were scanned for local paths and names: nothing found.
+- **Guest defaults for players** (in the patch, so the normal launcher works without JVM
+  arguments):
+  - link name `Local\OWCraft_v1`;
+  - `destruction` off;
+  - Minecraft keeps running when Outer Wilds closes (`skycraft.quitWithSkyrim=false`);
+  - SkyCraft's Discord status off. It would have said "Playing Skyrim" under chasmlol's app.
+  - Mod name "SkyCraft (OWCraft build)", version `0.1.2+owcraft.1`.
+- **Release files:**
+  - `Yaekai.OWCraft-0.1.0.zip`: the OWML mod folder, license and notices;
+  - `skycraft-0.1.2+owcraft.1.jar`: SkyCraft's MIT license added as `LICENSE_SkyCraft.txt`. It holds
+    no Minecraft classes or assets.
+- **Not yet tested:** this jar from the normal Minecraft launcher with Fabric. All play tests so far
+  ran through `gradlew runClient`.

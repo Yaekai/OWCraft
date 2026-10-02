@@ -16,56 +16,25 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it works.
 **Status: experimental, but playable.** It has been tested on one Windows PC: building, TNT and
 walking around planets work at 60 fps. Expect rough edges (see *Known limitations*).
 
-## What you need
-- Windows.
-- Outer Wilds (Steam), with the [Outer Wilds Mod Manager](https://outerwildsmods.com/mod-manager/)
-  (OWML 2.16).
-- Minecraft Java **26.3** and a JDK 25, to build and run SkyCraft's Fabric mod from source.
-- The .NET SDK, to build this mod.
+## Install (players)
+You need Windows, Outer Wilds (Steam) and Minecraft Java Edition.
 
-## Setup
-
-### 1. Minecraft side: SkyCraft plus the OWCraft patch
-SkyCraft's Fabric mod is the Minecraft side. `guest/skycraft-owcraft.patch` adds small changes on top
-of it:
-
-- skip presenting Minecraft's own hidden window while linked (this took Minecraft from 25 to 60 fps);
-- read the overlay back at once, so inventory screens keep up with the mouse;
-- a frame-time log.
-
-```bash
-git clone https://github.com/chasmlol/SkyCraft.git
-cd SkyCraft
-git checkout bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32
-git apply path/to/OWCraft/guest/skycraft-owcraft.patch
-```
-
-Then in `fabric/run/config/skycraft.properties` (created on first run), set:
-```
-destruction=false
-```
-Outer Wilds can't carve its planets, so this keeps explosions pure Minecraft. Without it you get
-stray stone after every blast.
-
-Start Minecraft from `fabric` (PowerShell) with the OWCraft link name:
-```powershell
-$env:JAVA_TOOL_OPTIONS = '-Dskycraft.link=Local\OWCraft_v1'
-.\gradlew.bat runClient
-```
-The link name keeps it from crossing wires with a real Skyrim/SkyCraft setup.
-
-### 2. Outer Wilds side: this mod
-```bash
-dotnet build host/OWCraft.csproj -c Release
-```
-If Outer Wilds isn't in the default Steam folder, add `-p:GameDir="D:\path\to\Outer Wilds"`.
-When the Mod Manager is installed, the build copies `OWCraft.dll`, `manifest.json` and
-`default-config.json` into `%AppData%\OuterWildsModManager\OWML\Mods\Yaekai.OWCraft`.
+1. **Outer Wilds:** install the [Outer Wilds Mod Manager](https://outerwildsmods.com/mod-manager/) and
+   start Outer Wilds from it once.
+2. **OWCraft:** download `Yaekai.OWCraft-<version>.zip` from
+   [Releases](https://github.com/Yaekai/OWCraft/releases). Unzip it into
+   `%AppData%\OuterWildsModManager\OWML\Mods\`, so you get a `Mods\Yaekai.OWCraft` folder.
+3. **Minecraft:** install [Fabric Loader](https://fabricmc.net/use/installer/) 0.19.5 or newer for
+   Minecraft **26.3**. Put two files in your `.minecraft\mods` folder:
+   - `skycraft-<version>+owcraft.<n>.jar` from [Releases](https://github.com/Yaekai/OWCraft/releases);
+   - [Fabric API](https://modrinth.com/mod/fabric-api) for 26.3.
+4. Start Minecraft with the Fabric profile in the normal launcher.
+5. Start Outer Wilds from the Mod Manager.
 
 ## Play
-1. Start Minecraft and open a world. A superflat **void** world is best, because the planet supplies
-   the ground.
-2. Start Outer Wilds, land somewhere, stand on the ground, and press **F6**.
+1. Once Outer Wilds connects, Minecraft opens its own void world (or creates it the first time). The
+   planet supplies the ground.
+2. In Outer Wilds, land somewhere, stand on the ground and press **F6**.
 3. Minecraft controls apply:
    - **O** opens Minecraft's menu;
    - **Esc** pauses Outer Wilds, or closes a Minecraft screen;
@@ -83,6 +52,34 @@ Settings (Mod Manager):
 | Minecraft mode FPS cap | 60 | Outer Wilds frame cap while in Minecraft mode |
 | Minecraft walk speed | 6.0 | Walking speed in m/s (vanilla Minecraft is 4.3) |
 | Verbose logging | off | Extra diagnostics in the OWML log |
+
+## Build from source
+You need the .NET SDK and a JDK 25.
+
+**Outer Wilds side:**
+```bash
+dotnet build host/OWCraft.csproj -c Release
+```
+If Outer Wilds isn't in the default Steam folder, add `-p:GameDir="D:\path	o\Outer Wilds"`.
+When the Mod Manager is installed, the build copies `OWCraft.dll`, `manifest.json` and
+`default-config.json` into `%AppData%\OuterWildsModManager\OWML\Mods\Yaekai.OWCraft`.
+
+**Minecraft side:** SkyCraft's Fabric mod plus `guest/skycraft-owcraft.patch`. The patch:
+- skips presenting Minecraft's own hidden window while linked (this took Minecraft from 25 to 60 fps);
+- reads the overlay back at once, so inventory screens keep up with the mouse;
+- sets OWCraft's defaults: the `Local\OWCraft_v1` link, no "Skyrim destruction" (Outer Wilds can't
+  carve its planets), Minecraft keeps running when Outer Wilds closes, and no Discord status;
+- adds a frame-time log.
+
+```bash
+git clone https://github.com/chasmlol/SkyCraft.git
+cd SkyCraft
+git checkout bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32
+git apply path/to/OWCraft/guest/skycraft-owcraft.patch
+cd fabric
+./gradlew build       # the jar lands in build/libs
+./gradlew runClient   # or run it straight from source
+```
 
 ## Known limitations
 - Translucent blocks (glass, water, ice) are drawn opaque.
