@@ -118,6 +118,13 @@ namespace OWCraft.Link
 			public uint TeleportSeq; // MC moves its player to X/Y/Z when this changes
 			public int ViewportW, ViewportH;
 			public float GameHour;
+			public Matrix3 ShiftRot;
+		}
+
+		/// <summary>A row-major 3x3 matrix (identity unless set).</summary>
+		public struct Matrix3
+		{
+			public float M00, M01, M02, M10, M11, M12, M20, M21, M22;
 		}
 
 		public void WriteHostState(in HostState s)
@@ -138,6 +145,9 @@ namespace OWCraft.Link
 			I32(b + Proto.SsViewportW) = s.ViewportW;
 			I32(b + Proto.SsViewportH) = s.ViewportH;
 			F32(b + Proto.SsGameHour) = s.GameHour;
+			var r = s.ShiftRot;
+			float[] m = { r.M00, r.M01, r.M02, r.M10, r.M11, r.M12, r.M20, r.M21, r.M22 };
+			for (int i = 0; i < 9; i++) F32(b + Proto.SsShiftRot + i * 4) = m[i];
 			Thread.MemoryBarrier();
 			Volatile.Write(ref I32(b + Proto.SsSeq), _hostSeq);
 		}

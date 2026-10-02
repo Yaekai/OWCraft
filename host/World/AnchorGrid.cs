@@ -71,6 +71,10 @@ namespace OWCraft.World
 		public int Slot; // which band of the Minecraft world (Z) belongs to this planet
 		public float Radius; // the reference sphere the anchors sit on
 		public int TilesPerFaceEdge;
+		// No gravity of its own (Giant's Deep's islands): one flat tile through the body's centre, with
+		// "up" fixed in the body. Its own centre isn't down, the planet it floats on is.
+		public bool Flat;
+		public Vector3 FlatUp = Vector3.up; // body-local
 		public readonly Dictionary<int, Anchor> Anchors = new Dictionary<int, Anchor>();
 
 		public float TileSize => Radius * Mathf.PI * 0.5f / TilesPerFaceEdge;
@@ -129,7 +133,7 @@ namespace OWCraft.World
 			{
 				radius = HarmonyLib.Traverse.Create(gravity).Field("_upperSurfaceRadius").GetValue<float>();
 			}
-			if (radius < 5f) radius = 100f; // islands and props without gravity of their own
+			bool flat = radius < 5f; // islands and props without gravity of their own
 
 			while (BySlot.ContainsKey(slot)) slot = 32 + (slot - 32 + 1) % 224;
 			info = new PlanetInfo
@@ -137,13 +141,33 @@ namespace OWCraft.World
 				Body = body,
 				Name = name,
 				Slot = slot,
-				Radius = radius,
-				TilesPerFaceEdge = Mathf.Clamp(Mathf.RoundToInt(radius * Mathf.PI * 0.5f / TargetTileMetres), 1, MaxTiles),
+				Radius = flat ? 0f : radius,
+				Flat = flat,
+				TilesPerFaceEdge = flat ? 1 : Mathf.Clamp(Mathf.RoundToInt(radius * Mathf.PI * 0.5f / TargetTileMetres), 1, MaxTiles),
 			};
 			Planets[body] = info;
 			BySlot[slot] = info;
-			OWCraft.Log($"planet {name}: slot {slot}, radius {radius:F0} m, {info.TilesPerFaceEdge} tiles per face edge ({info.TileSize:F0} m)");
+			OWCraft.Log(flat ? $"planet {name}: slot {slot}, no gravity of its own: one flat tile"
+				: $"planet {name}: slot {slot}, radius {radius:F0} m, {info.TilesPerFaceEdge} tiles per face edge ({info.TileSize:F0} m)");
 			return info;
+		}
+
+		/// <summary>The real planet (with gravity) whose surface is closest to this point.</summary>
+		public static PlanetInfo Nearest(Vector3 world)
+		{
+			PlanetInfo best = null;
+			float bestD = float.MaxValue;
+			foreach (var p in Planets.Values)
+			{
+				if (p.Flat || p.Body == null) continue;
+				float d = Vector3.Distance(world, p.Body.transform.position) - p.Radius;
+				if (d < bestD)
+				{
+					bestD = d;
+					best = p;
+				}
+			}
+			return best;
 		}
 
 		static uint StableHash(string s)
@@ -159,6 +183,7 @@ namespace OWCraft.World
 		/// <summary>The tile under a body-local position.</summary>
 		public static Anchor TileAt(PlanetInfo planet, Vector3 bodyLocal)
 		{
+			if (planet.Flat) return GetAnchor(planet, 0, 0, 0);
 			Vector3 d = bodyLocal.sqrMagnitude > 1e-6f ? bodyLocal.normalized : Vector3.up;
 			int axis = 0;
 			for (int k = 1; k < 3; k++)
@@ -191,9 +216,10 @@ namespace OWCraft.World
 			p[axis] = sign;
 			p[ua] = TileCentre(i, planet.TilesPerFaceEdge);
 			p[va] = TileCentre(j, planet.TilesPerFaceEdge);
-			Vector3 up = p.normalized;
+			Vector3 up = planet.Flat ? planet.FlatUp : p.normalized;
 			Vector3 axisV = Vector3.zero;
 			axisV[va] = 1f;
+			if (Mathf.Abs(Vector3.Dot(axisV, up)) > 0.9f) axisV = Vector3.right;
 			Vector3 forward = (axisV - Vector3.Dot(axisV, up) * up).normalized;
 			anchor = new Anchor
 			{

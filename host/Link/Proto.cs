@@ -42,7 +42,12 @@ namespace OWCraft.Link
 		public const long SsSeq = 0x00, SsFlags = 0x04, SsWorldId = 0x08, SsCollisionEpoch = 0x0C;
 		public const long SsPosX = 0x10, SsPosY = 0x18, SsPosZ = 0x20, SsYaw = 0x28, SsPitch = 0x2C;
 		public const long SsTeleportSeq = 0x30, SsViewportW = 0x34, SsViewportH = 0x38, SsGameHour = 0x3C;
+		// OWCraft: the last tile change as a 3x3 rotation (row-major, old tile's Minecraft axes -> new tile's),
+		// so Minecraft can carry the mobs around the player along with it.
+		public const long SsShiftRot = 0x40;
 		public const uint HostInGame = 1, HostMenuOpen = 1 << 1, HostLoading = 1 << 2;
+		// OWCraft's own: the current teleport is a tile change (same spot, new Minecraft coordinates).
+		public const uint HostReanchor = 1 << 3;
 
 		// MC -> host state (seqlock)
 		public const long MsSeq = 0x00, MsFlags = 0x04, MsX = 0x08, MsY = 0x10, MsZ = 0x18, MsYaw = 0x20, MsPitch = 0x24;
@@ -51,6 +56,7 @@ namespace OWCraft.Link
 		public const long MsTickQpc = 0x68, MsPrevX = 0x70, MsCurX = 0x88, MsTickMs = 0xB8, MsCameraMode = 0xC0, MsCameraDistance = 0xC4;
 		public const uint McInWorld = 1, McScreenOpen = 1 << 1, McOnGround = 1 << 2, McSneaking = 1 << 3;
 		public const uint McSprinting = 1 << 4, McDead = 1 << 5, McSwimming = 1 << 6, McFlying = 1 << 7;
+		public const uint McInvulnerable = 1 << 8; // OWCraft: Creative or Spectator
 
 		// overlay triple buffer
 		public const long OcState = 0x00, OcFramesPublished = 0x08;

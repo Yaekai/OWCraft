@@ -22,6 +22,7 @@ namespace OWCraft.World
 		bool _atlasDirty;
 		Material _solid, _translucent;
 		readonly SceneRenderer _scene;
+		public SceneRenderer Scene => _scene;
 		readonly LightRenderer _lights = new LightRenderer();
 
 		public Material SolidMaterial => _solid;
@@ -172,7 +173,9 @@ namespace OWCraft.World
 					case Proto.RenLights:
 						_lights.OnLights(p, bytes);
 						break;
-					// The player model: later.
+					case Proto.RenAvatar:
+						_scene.OnAvatar(p, bytes);
+						break;
 				}
 			}
 			catch (Exception e)

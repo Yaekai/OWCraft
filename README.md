@@ -37,6 +37,7 @@ You need Windows, Outer Wilds (Steam) and Minecraft Java Edition.
 2. In Outer Wilds, land somewhere, stand on the ground and press **F6**.
 3. Minecraft controls apply:
    - **O** opens Minecraft's menu;
+   - **F5** switches to third person (Minecraft's body is drawn on the planet), like in Minecraft;
    - **Esc** pauses Outer Wilds, or closes a Minecraft screen;
    - **F6** leaves Minecraft mode.
 
@@ -60,7 +61,7 @@ You need the .NET SDK and a JDK 25.
 ```bash
 dotnet build host/OWCraft.csproj -c Release
 ```
-If Outer Wilds isn't in the default Steam folder, add `-p:GameDir="D:\path	o\Outer Wilds"`.
+If Outer Wilds isn't in the default Steam folder, add `-p:GameDir="D:\Games\Outer Wilds"`.
 When the Mod Manager is installed, the build copies `OWCraft.dll`, `manifest.json` and
 `default-config.json` into `%AppData%\OuterWildsModManager\OWML\Mods\Yaekai.OWCraft`.
 
@@ -69,6 +70,11 @@ When the Mod Manager is installed, the build copies `OWCraft.dll`, `manifest.jso
 - reads the overlay back at once, so inventory screens keep up with the mouse;
 - sets OWCraft's defaults: the `Local\OWCraft_v1` link, no "Skyrim destruction" (Outer Wilds can't
   carve its planets), Minecraft keeps running when Outer Wilds closes, and no Discord status;
+- keeps speed and elytra flight when Outer Wilds moves you to a new planet tile, and brings the
+  mobs and items around you along;
+- lets mobs path over the planet surface, and holds mobs and items still where the planet's ground
+  hasn't streamed in yet (instead of letting them fall into the void);
+- sends arrows, tridents and dropped items through the scene so Outer Wilds draws them;
 - adds a frame-time log.
 
 ```bash
@@ -84,16 +90,18 @@ cd fabric
 ## Known limitations
 - Translucent blocks (glass, water, ice) are drawn opaque.
 - Outer Wilds' own player doesn't collide with placed blocks yet. Only the Minecraft player does.
-- There's no visible Steve body, and the Minecraft world doesn't follow Outer Wilds' day/night.
+- The Minecraft world doesn't follow Outer Wilds' day/night.
 - Nether portals and other dimensions aren't supported.
-- Mobs path across the planet surface as if it were Minecraft terrain, which isn't always right.
+- Mobs only find the planet's ground within about 40 blocks of you. Further away they wait in place.
 
 ## Repository layout
 - `host/`: the OWML mod (C#). `Link/` holds the shared-memory protocol, `World/` the planet tiles,
   collision and rendering, `Player/` the movement, input and commands, `UI/` the overlay.
 - `guest/`: the patch to SkyCraft's Fabric mod.
 - `tests/VoxelTest`: a unit test for the collision voxelizer.
+- `tools/check-logs.py`: reads both games' logs after a play test and lists known problems.
 - `docs/DESIGN.md`: the architecture.
+- `CHANGELOG.md`: what changed in each release.
 - `MODLOG.md`: the full development log, test by test.
 
 ## Honesty note

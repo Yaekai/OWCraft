@@ -65,9 +65,10 @@ namespace OWCraft.World
 		{
 			string s = $"collision: {_statHarvests} regions harvested ({_statEmpty} with no ground), {_statHits} colliders overlapped, " +
 				$"{_statOwned} on the planet, {_statTris} triangles, {UnreadableMeshes} unreadable meshes so far, " +
-				$"physics/transform offset {_statPhysOffset:F2} m, {RegionsSent} regions sent in total";
+				$"physics/transform offset {_statPhysOffset:F2} m, {RegionsSent} regions sent in total, side samples {_statSideMs:F0} ms";
 			_statHarvests = _statHits = _statOwned = _statTris = _statEmpty = 0;
 			_statPhysOffset = 0f;
+			_statSideMs = 0;
 			return s;
 		}
 
@@ -163,6 +164,7 @@ namespace OWCraft.World
 		// After a reset (teleport, new tile) Minecraft freezes the player until the ground under it
 		// arrives, so the next frame harvests the regions around the feet in one go.
 		bool _urgent;
+		bool _refreshing;
 		const int UrgentHarvests = 18;
 		const double UrgentBudgetMs = 12;
 
@@ -184,7 +186,11 @@ namespace OWCraft.World
 				bool isNear = Math.Abs(o.x) <= 1 && Math.Abs(o.z) <= 1 && o.y >= -1 && o.y <= 0;
 				if (_harvested.TryGetValue(key, out float at) && !(isNear && now - at > RefreshNearSeconds)) continue;
 				if (_queue.Count > 64) break; // the worker (or Minecraft) is behind
+				// A refresh is for sand and crumbling ground, seen from above. The side samples (trunks,
+				// walls) don't change and were the biggest frame hitches, so a refresh skips them.
+				_refreshing = at > 0f;
 				Harvest(anchor, rx, ry, rz);
+				_refreshing = false;
 				_harvested[key] = now;
 				if (++done >= cap || _clock.Elapsed.TotalMilliseconds > budget) break;
 			}
@@ -277,7 +283,16 @@ namespace OWCraft.World
 					if (data == null)
 					{
 						UnreadableMeshes++;
-						AddHeightSamples(anchor, col, tris, lo, hi);
+						AddSurfaceSamples(anchor, col, tris, lo, hi, 1, true, 0f);
+						if (_refreshing) return;
+						// From the sides too: from above, a tree or a house is only a sheet at its top
+						// and you'd walk straight through its trunk or walls.
+						_clock2.Restart();
+						AddSurfaceSamples(anchor, col, tris, lo, hi, 0, true, SideMaxStep);
+						AddSurfaceSamples(anchor, col, tris, lo, hi, 0, false, SideMaxStep);
+						AddSurfaceSamples(anchor, col, tris, lo, hi, 2, true, SideMaxStep);
+						AddSurfaceSamples(anchor, col, tris, lo, hi, 2, false, SideMaxStep);
+						_statSideMs += _clock2.Elapsed.TotalMilliseconds;
 						return;
 					}
 					// The region box in the mesh's local space, to skip most triangles cheaply.
@@ -308,7 +323,7 @@ namespace OWCraft.World
 					return;
 				}
 				default:
-					AddHeightSamples(anchor, col, tris, lo, hi);
+					AddSurfaceSamples(anchor, col, tris, lo, hi, 1, true, 0f);
 					return;
 			}
 		}
@@ -343,36 +358,66 @@ namespace OWCraft.World
 		}
 
 		/// <summary>
-		/// Colliders whose triangles Unity won't hand out (meshes baked without Read/Write): sample the
-		/// surface from above on a half-block grid and stitch the hits into triangles.
+		/// Colliders whose triangles Unity won't hand out (meshes baked without Read/Write): cast rays at
+		/// the collider along one Minecraft axis on a half-block grid, and stitch neighbouring hits into
+		/// triangles. From above that's the ground; from the sides, walls and trunks. maxStep &gt; 0 skips
+		/// cells whose hits jump further than that along the ray (an edge, not a surface).
 		/// </summary>
-		void AddHeightSamples(Anchor anchor, Collider col, List<Tri> tris, Vector3 lo, Vector3 hi)
+		void AddSurfaceSamples(Anchor anchor, Collider col, List<Tri> tris, Vector3 lo, Vector3 hi, int axis, bool fromHigh, float maxStep)
 		{
-			int n = Mathf.RoundToInt((hi.x - lo.x) / SampleStep) + 1;
-			var heights = new float[n * n];
-			Vector3 down = -(anchor.WorldRotation * Vector3.up);
-			float depth = hi.y - lo.y;
-			for (int iz = 0; iz < n; iz++)
+			int u = (axis + 1) % 3, v = (axis + 2) % 3;
+			int n = Mathf.RoundToInt((hi[u] - lo[u]) / SampleStep) + 1;
+			if (_samples == null || _samples.Length < n * n)
 			{
-				for (int ix = 0; ix < n; ix++)
+				_samples = new Vector3[n * n];
+				_sampleHit = new bool[n * n];
+			}
+			Bounds bounds = col.bounds;
+			for (int iv = 0; iv < n; iv++)
+			{
+				for (int iu = 0; iu < n; iu++)
 				{
-					float x = lo.x + ix * SampleStep, z = lo.z + iz * SampleStep;
-					Vector3 from = anchor.McToWorld(x, hi.y, z);
-					heights[iz * n + ix] = col.Raycast(new Ray(from, down), out var hit, depth) ? hi.y - hit.distance : float.NaN;
+					int k = iv * n + iu;
+					_sampleHit[k] = false;
+					Vector3 a = default;
+					a[u] = lo[u] + iu * SampleStep;
+					a[v] = lo[v] + iv * SampleStep;
+					a[axis] = fromHigh ? hi[axis] : lo[axis];
+					Vector3 b = a;
+					b[axis] = fromHigh ? lo[axis] : hi[axis];
+					Vector3 wa = anchor.McToWorld(a.x, a.y, a.z), d = anchor.McToWorld(b.x, b.y, b.z) - wa;
+					float len = d.magnitude;
+					var ray = new Ray(wa, d / len);
+					if (!bounds.IntersectRay(ray, out float enter) || enter > len) continue;
+					if (!col.Raycast(ray, out var hit, len)) continue;
+					_samples[k] = ToMc(anchor, hit.point);
+					_sampleHit[k] = true;
 				}
 			}
-			for (int iz = 0; iz + 1 < n; iz++)
+			for (int iv = 0; iv + 1 < n; iv++)
 			{
-				for (int ix = 0; ix + 1 < n; ix++)
+				for (int iu = 0; iu + 1 < n; iu++)
 				{
-					float h00 = heights[iz * n + ix], h10 = heights[iz * n + ix + 1], h01 = heights[(iz + 1) * n + ix], h11 = heights[(iz + 1) * n + ix + 1];
-					if (float.IsNaN(h00) || float.IsNaN(h10) || float.IsNaN(h01) || float.IsNaN(h11)) continue;
-					float x0 = lo.x + ix * SampleStep, z0 = lo.z + iz * SampleStep, x1 = x0 + SampleStep, z1 = z0 + SampleStep;
-					AddTri(tris, new Vector3(x0, h00, z0), new Vector3(x1, h10, z0), new Vector3(x1, h11, z1), lo, hi);
-					AddTri(tris, new Vector3(x0, h00, z0), new Vector3(x1, h11, z1), new Vector3(x0, h01, z1), lo, hi);
+					int k00 = iv * n + iu, k10 = k00 + 1, k01 = k00 + n, k11 = k01 + 1;
+					if (!_sampleHit[k00] || !_sampleHit[k10] || !_sampleHit[k01] || !_sampleHit[k11]) continue;
+					Vector3 p00 = _samples[k00], p10 = _samples[k10], p01 = _samples[k01], p11 = _samples[k11];
+					if (maxStep > 0f)
+					{
+						float mn = Mathf.Min(Mathf.Min(p00[axis], p10[axis]), Mathf.Min(p01[axis], p11[axis]));
+						float mx = Mathf.Max(Mathf.Max(p00[axis], p10[axis]), Mathf.Max(p01[axis], p11[axis]));
+						if (mx - mn > maxStep) continue;
+					}
+					AddTri(tris, p00, p10, p11, lo, hi);
+					AddTri(tris, p00, p11, p01, lo, hi);
 				}
 			}
 		}
+
+		Vector3[] _samples;
+		bool[] _sampleHit;
+		readonly Stopwatch _clock2 = new Stopwatch();
+		double _statSideMs;
+		const float SideMaxStep = 1f;
 
 		void AddSphere(Anchor anchor, List<Tri> tris, Vector3 a, Vector3 b, float r, Vector3 lo, Vector3 hi)
 		{

@@ -3,7 +3,7 @@
   "author": "Yaekai",
   "name": "OWCraft",
   "uniqueName": "Yaekai.OWCraft",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owmlVersion": "2.16.3",
   "description": "Play real Minecraft on Outer Wilds planets: land, press F6, build. Needs Minecraft running with SkyCraft's Fabric mod (see README)."
 }

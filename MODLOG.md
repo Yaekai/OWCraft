@@ -455,3 +455,204 @@ Neither is copied into this repo.
     no Minecraft classes or assets.
 - **Not yet tested:** this jar from the normal Minecraft launcher with Fabric. All play tests so far
   ran through `gradlew runClient`.
+
+## 2026-10-02: elytra freezes, invisible arrows
+- **Elytra froze in the air every few seconds.**
+  - Cause: flying crosses a ~40 m tile every 2–5 s (seen in the OWML log). Each tile change was a
+    full teleport: velocity zeroed, then the guest's hold kept the player still until ground was
+    known (up to 6 s).
+  - Fix: the host flags tile-change teleports (`HostReanchor`, bit 3 of the host flags).
+    - Airborne: the guest moves the player by the offset with a relative teleport (`Relative.ALL`),
+      which keeps velocity and flight, with no hold. It acks once the player is within 64 blocks
+      of the target. If that doesn't happen within 1 s, it falls back to the old teleport.
+    - On the ground, the old path stays.
+  - Host rebuilt: 0 warnings, 0 errors. Guest compiles. **Not yet tested in game.**
+  - Known gaps: velocity isn't rotated into the new tile's frame (small angle). Skipping the hold
+    near terrain could clip briefly.
+- **Arrows were invisible (only their particle trail showed).**
+  - Cause: SkyCraft sends arrows, dropped items and thrown items through a separate light table
+    (`WorldExporter`, 0x1C000). Its scene export skips them, and our host never reads that table.
+  - Fix (guest): the scene export no longer skips them. They now come through with Minecraft's real
+    models, like mobs. Tridents, dropped items, snowballs and ender pearls are covered too.
+    **Not yet tested in game.**
+  - Note: the scene holds 48 entities within 64 blocks, so a big pile of dropped items could crowd
+    out mobs.
+- Guest is now `0.1.2+owcraft.2`. The patch was regenerated and applies to `bfcaf178`.
+
+## 2026-10-02: play test of owcraft.2, and three fixes
+**Play test:** elytra flight and arrows work. Still wrong: slight shake, a spawned creeper vanished
+after a few blocks of walking, and the player clips through most Outer Wilds objects.
+
+**Shake.** The log had 20 `IndexOutOfRangeException`s in `PlayerDriver.Update`, each just before a
+tile change.
+- Cause: a mid-air tile shift is confirmed before Minecraft's next tick, and the tick buffer was
+  empty (it's reset on teleport). That frame threw before the player was placed, so Unity moved them
+  on its own: a jolt.
+- Fix: with no ticks yet, use Minecraft's reported position as is.
+
+**Creeper vanished.**
+- Cause: a tile change moves the Minecraft player 512 blocks. Mobs stayed in the old area, lost their
+  ground when the collision was cleared, and despawned at that distance.
+- Fix:
+  - The host now sends the rotation between the old and new tile (`SsShiftRot`, 9 floats at 0x40 in
+    the host state; neighbouring tiles lean a few degrees apart).
+  - The guest (`TileCarry`, server thread) moves every non-player entity within 48 blocks along with
+    the player: same offset, turned by that rotation, and yaw turned too.
+  - Each moved entity is lifted 0.25 blocks, because the tiles' 1/8-block grids don't line up. It is
+    held still until the new tile's collision under it is known, at most 4 s.
+
+**Clipping.**
+- Cause: about 2000 Outer Wilds collider meshes are unreadable (no Read/Write), and those were only
+  sampled from straight above. A tree or house became a thin sheet at its top, with nothing at body
+  height.
+- Fix: unreadable meshes are now also sampled from ±X and ±Z, on the same half-block ray grid.
+  Neighbouring hits are stitched into triangles, skipping cells where the hits jump more than one
+  block (an edge, not a surface). Rays that miss the collider's bounds are skipped cheaply.
+- The stats line now reports `side samples N ms`, to watch the cost.
+
+Host: 0 warnings, 0 errors. Guest `0.1.2+owcraft.3` builds; the patch was regenerated and applies to
+`bfcaf178`. **None of the three fixes has been tested in game yet.**
+
+## 2026-10-02: play test (new host, old guest), elytra freezes and mobs
+**Play test:** collision is fixed (the side samples work). New problems: freezes during elytra
+flight, and mobs that die on their own or don't move at all.
+
+This test ran with the new host but the **old guest** (`owcraft.2`). The `owcraft.3` jar was never
+copied into `.minecraft\mods`, so `TileCarry` wasn't there.
+
+**Elytra freezes.**
+- Log: two tile changes in the same second, then `Minecraft moved the player off this tile;
+  bringing it back`. That's a full teleport with the player held: the freeze.
+- Cause:
+  - The first tick after a tile shift reports its *previous* position from before the shift, on the
+    old tile.
+  - The host started its smoothing from there, so for a frame the player looked off-tile.
+- Fix (host):
+  - When the previous position is over 8 blocks from the current one, smoothing starts from the
+    current one.
+  - If the smoothed position is off-tile but Minecraft's own position isn't, the host uses
+    Minecraft's.
+
+**Mobs dying.**
+- Cause: Minecraft only has planet ground within about 40 blocks of the player, and every tile change
+  clears it. Mobs outside it fall into the void.
+- Fix (guest, `TileCarry`): living entities and dropped items that are in the air where no collision
+  is known (at their feet or one region below) are held in place each server tick.
+
+**Mobs not moving.**
+- Cause: Minecraft's pathfinding only looks at blocks. To it the planet ground is air, so a mob finds
+  no floor and its path goals fail.
+- Fix (guest, new `PathfindingContextMixin`): during pathfinding, air under a planet surface (the
+  same test that lets torches stand on terrain) counts as solid. These lookups bypass Minecraft's
+  path-type cache, since the ground streams in later.
+
+Host: 0 warnings, 0 errors. Guest `0.1.2+owcraft.4` builds and is installed in `.minecraft\mods`
+(owcraft.2 removed). The patch was regenerated and applies to `bfcaf178`. **Not tested in game
+yet.**
+
+## 2026-10-02: owcraft.4 play test; Steve body, F5, footsteps
+**Play test:** mobs spawn and move now, but don't come for the player. You hear footsteps on blocks
+while gliding with the elytra. Asked for: Minecraft's player model instead of the Hearthian, and F5
+third person.
+
+**Mobs not coming at you.** The player was in Creative mode (the log shows `Set own game mode to
+Creative Mode`). Hostile mobs ignore Creative players in vanilla. Nothing to change. Needs a retest in
+Survival.
+
+**Footsteps while gliding.**
+- Cause: the host told Outer Wilds the player was grounded every frame (so the animator wouldn't play
+  a fall). A grounded player that moves gets footstep sounds.
+- Fix (host): grounded only while Minecraft says it's on the ground (or swimming). In the air it isn't.
+
+**Steve body.**
+- Minecraft already captures the player's own body in third person (`REN_AVATAR`, posed, relative to
+  the feet; empty in first person). The host ignored it.
+- Fix (host): `SceneRenderer` now has two layers, the scene and the body. The body is drawn at the
+  feet the host shows every frame, on the tile's root, with the same materials as mobs.
+- In Minecraft mode the Hearthian's skinned meshes are hidden. They come back on leaving.
+
+**F5.**
+- The host used to block F5 and switch Minecraft back to first person whenever it left it. Both are
+  gone.
+- In third person the Outer Wilds camera sits Minecraft's own camera distance behind the eye, or in
+  front looking back. Minecraft already shortens that against its blocks. A sphere cast shortens it
+  further against the planet's real geometry.
+- Aim stays Minecraft's: what you hit is what Minecraft's crosshair hits from the eye.
+
+Host only (guest unchanged at `owcraft.4`): 0 warnings, 0 errors, deployed. **Not tested in game
+yet.**
+
+## 2026-10-02: invincible in Creative and Spectator
+**Ask:** the Outer Wilds body suffocates when you fly off the planet in Minecraft mode. That's fine in
+Survival, but not in Creative or Spectator.
+- Guest: a new McState flag, `MC_INVULNERABLE` (1 << 8), set from `player.getAbilities().invulnerable`.
+  That's true in Creative and Spectator.
+- Host: while in Minecraft mode with that flag, `PlayerResources._invincible` is on. This is the
+  game's own debug invincibility. Its oxygen, health and instant-damage code all check that field
+  (checked by reading their IL for the field token, not by decompiling). It turns off when the flag
+  clears or Minecraft mode ends. If the game's cheat had already turned it on, it's left alone.
+- Guest is now `0.1.2+owcraft.5`; the patch was regenerated and applies to `bfcaf178`. Host: 0 warnings,
+  0 errors. **Not tested in game yet.**
+
+## 2026-10-02: log checker, and fewer collision hitches
+- New `tools/check-logs.py`. It reads the newest OWML log and Minecraft's `latest.log` and lists the
+  known problems: tile resyncs (the elytra freeze), errors in OWCraft code, stalls, low fps, mid-air
+  teleports, mixin failures. It exits with 1 if it finds any.
+- On the `owcraft.4` play test it found 43 tile changes and 0 "off this tile" resyncs, so the elytra
+  freeze is fixed. It also found collision spikes: up to 138 ms in one frame, and up to 428 ms of
+  side samples (the raycasts from the sides that catch tree trunks and walls) in one 5 s window.
+- The regions next to the player are harvested again every second, for sand and crumbling ground.
+  Those refreshes now skip the side samples, since trunks and walls don't move. The first harvest
+  of a region still does them. Host: 0 errors. **Not tested in game yet.**
+
+## 2026-10-02: play test on Giant's Deep's islands
+**Report:** everything broke and shook after flying to another planet; F5 and the footstep sounds are
+fixed, and elytra flight feels mostly okay.
+- The log: the player stood on `BrambleIsland_Body`, one of Giant's Deep's floating islands. It's its
+  own rigidbody with no gravity of its own, so OWCraft took it for a 100 m planet and pointed
+  Minecraft's "up" away from the island's centre instead of up from Giant's Deep. Flying off the
+  island, the player crossed that fake sphere's tile edges over and over (one tile change after
+  another, flipping straight back), and the world jumped each time.
+- Fix: a body with no gravity of its own is now one flat tile through its centre. Its "up" is the
+  body's own up when that is within 30 degrees of gravity (the same tile every loop), or else the
+  gravity direction when you first press F6 there. Flying more than 256 blocks from the island
+  brings you back, like any other tile edge.
+- `tools/check-logs.py` now flags tile changes that flip straight back.
+- Also seen: Outer Wilds stopped drawing for 44 s around 15:24:20 (Minecraft saw the link go down).
+  Yaekai had alt-tabbed, so it's not a bug. Host: 0 errors. **Not tested in game yet.**
+
+## 2026-10-02: second island test
+**Report:** standing on the island works, but the camera is sideways and jumpy; flying out over Giant's
+Deep, the player froze in the air and things started shaking again.
+- Camera: every frame the player was turned upright to "away from the body's centre". On an island
+  that's sideways. Flat tiles now use the tile's own up.
+- Freeze: 29 "off this tile" resyncs, the island's 256-block edge acting as a wall, again and again.
+  Now, 160 blocks from the island's centre, the player moves over to the nearest real planet (the one
+  with gravity whose surface is closest, so Giant's Deep), like a normal tile change. The player is
+  re-pinned to that body, and the tile-shift rotation is now worked out in world space so it works
+  between two bodies.
+- Known: once you're on Giant's Deep's tiles, the islands aren't its collision (they're separate
+  bodies), so Minecraft doesn't see them until you F6 again while standing on one.
+- Host: 0 errors. **Not tested in game yet.**
+
+## 2026-10-02: third island test, and elytra over Giant's Deep
+**Report:** went nuts towards the end: Minecraft's menu opened by itself, sinking, unresponsive. Asked for
+smoother elytra flight (rubber-banding and lag).
+- The island-to-Giant's-Deep handover worked (one tile change, then Giant's Deep's own tiles).
+- Then, flying at elytra speed over 40 m tiles: a tile change about every second. Each one moves the
+  Minecraft player 512+ blocks to another area, reloads chunks there and clears the collision. The
+  server fell 2 s behind, the tile shifts arrived late ("teleporting instead"), the player fell with no
+  ground loaded, died, and the death screen was the "menu" that opened. Minecraft then stalled for
+  up to 31 s per frame.
+- Fix: in the air, the player now stays on a tile until 160 blocks from its centre, or until
+  "up" leans 20 degrees from the planet's, whichever is closer (on Timber Hearth about 90 blocks, on
+  Giant's Deep 160). That's 4 to 6 times fewer tile changes in flight. Back on the ground the normal
+  limit (60% of a tile) applies again, so it moves to the nearest tile when you land. Tile sizes are
+  unchanged, so saved builds stay where they are.
+- Host: 0 errors. **Not tested in game yet.**
+
+## 2026-10-02: elytra test
+**Report:** elytra flight feels smoother now. The log: 44 tile changes in one session, 0 resyncs, no
+flips. One landing gave a full teleport (2 s after a tile change) with "standing on air"; left as is
+for now. `tools/check-logs.py` no longer counts the game's own errors at quit (an OWCraft line right
+after them) as ours: it now looks only at the error's own stack trace.

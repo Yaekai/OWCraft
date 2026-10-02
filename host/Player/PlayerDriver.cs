@@ -16,10 +16,15 @@ namespace OWCraft.Player
 	{
 		/// <summary>Moving this far (fraction of a tile) from the anchor into another tile switches tile.</summary>
 		const float ReanchorFraction = 0.6f;
+		const double FlatLeave = 160; // blocks from an island's centre
+		const float FlightReanchor = 160f; // blocks from the tile's centre, while in the air
+		const float FlightLean = 0.36f; // tan(20 degrees): how far "up" may lean in flight
+		bool _inAir;
 
 		public bool Active { get; private set; }
 		public Anchor Anchor { get; private set; }
 		public uint TeleportSeq { get; private set; }
+		bool _reanchor;
 		public uint CollisionEpoch { get; private set; }
 		public float Yaw, Pitch; // Minecraft degrees, authoritative (we integrate the mouse)
 		public double X, Y, Z; // Minecraft feet: where the host says the player is
@@ -40,6 +45,10 @@ namespace OWCraft.Player
 		public static float MaxVelocityCorrection; // how wrong the game's own player velocity was (diagnostics)
 
 		readonly System.Collections.Generic.List<Collider> _solidColliders = new System.Collections.Generic.List<Collider>();
+		readonly System.Collections.Generic.List<Renderer> _hiddenModel = new System.Collections.Generic.List<Renderer>();
+		Transform _camT; // the player camera, and where it sits in the body when in first person
+		Vector3 _camLocal;
+		public bool ThirdPerson { get; private set; } // Minecraft's F5 view: we show its body
 		RigidbodyInterpolation _previousInterpolation;
 		Collider _groundCollider;
 		static long _qpcFrequency;
@@ -90,6 +99,18 @@ namespace OWCraft.Player
 			Transform player = body.transform;
 
 			Vector3 up = (player.position - planet.Body.transform.position).normalized;
+			if (planet.Flat)
+			{
+				up = player.up; // the game keeps the player upright in the planet's gravity
+				if (planet.Anchors.Count == 0)
+				{
+					// The body's own up when it's close (the same tile every loop); otherwise today's gravity.
+					Vector3 local = planet.Body.transform.InverseTransformDirection(up);
+					float tilt = Vector3.Angle(local, Vector3.up);
+					planet.FlatUp = tilt < 30f ? Vector3.up : local.normalized;
+					OWCraft.Log($"{planet.Name}: its up is {tilt:F0} degrees from gravity's, using {(tilt < 30f ? "its own" : "gravity's")}");
+				}
+			}
 			_feetOffset = Mathf.Clamp(Vector3.Dot(player.position - controller.GetGroundContactPoint(), up), 0f, 3f);
 			Vector3 feet = player.position - up * _feetOffset;
 			Anchor = AnchorGrid.TileAt(planet, planet.Body.transform.InverseTransformPoint(feet));
@@ -133,6 +154,17 @@ namespace OWCraft.Player
 			OWInput.ChangeInputMode(InputMode.None);
 			var cam = Locator.GetPlayerCameraController();
 			if (cam != null) Traverse.Create(cam).Field("_degreesX").SetValue(0f);
+			// Minecraft draws the body now (Steve, in third person): the Hearthian's model goes.
+			_hiddenModel.Clear();
+			var camT = lookCam != null ? lookCam.transform : null;
+			foreach (var r in body.GetComponentsInChildren<SkinnedMeshRenderer>())
+			{
+				if (!r.enabled || (camT != null && r.transform.IsChildOf(camT))) continue;
+				r.enabled = false;
+				_hiddenModel.Add(r);
+			}
+			_camT = camT;
+			if (camT != null) _camLocal = camT.localPosition;
 
 			Active = true;
 			Teleport(streamer);
@@ -154,6 +186,15 @@ namespace OWCraft.Player
 				if (c != null) c.enabled = true;
 			}
 			_solidColliders.Clear();
+			foreach (var r in _hiddenModel)
+			{
+				if (r != null) r.enabled = true;
+			}
+			_hiddenModel.Clear();
+			if (_camT != null) _camT.localPosition = _camLocal;
+			_camT = null;
+			ThirdPerson = false;
+			SetInvincible(false);
 			if (body != null)
 			{
 				var rb = body.GetComponent<Rigidbody>();
@@ -187,12 +228,41 @@ namespace OWCraft.Player
 			t.Field("_groundCollider").SetValue(_groundCollider);
 		}
 
+		/// <summary>
+		/// Creative and Spectator can't be hurt in Minecraft, so the Outer Wilds body can't either: no
+		/// suffocating off the planet, no impacts, no hazards. The game's own invincibility (its debug
+		/// cheat), which its oxygen, health and damage code all check. Left alone if it was already on.
+		/// </summary>
+		void SetInvincible(bool on)
+		{
+			if (on == _madeInvincible) return;
+			var body = Locator.GetPlayerBody();
+			var resources = body != null ? body.GetComponentInChildren<PlayerResources>() : null;
+			if (resources == null) resources = UnityEngine.Object.FindObjectOfType<PlayerResources>();
+			if (resources == null) return;
+			var field = Traverse.Create(resources).Field("_invincible");
+			if (on && field.GetValue<bool>()) return; // already invincible: not ours to undo
+			field.SetValue(on);
+			_madeInvincible = on;
+			OWCraft.Log(on ? "Minecraft can't be hurt (Creative/Spectator): the player is invincible" : "the player can be hurt again");
+		}
+
+		bool _madeInvincible;
+
+		/// <summary>In the air in Minecraft (jumping, falling, gliding): not grounded here either.</summary>
+		static void Lift(PlayerCharacterController controller)
+		{
+			if (controller == null) return;
+			Traverse.Create(controller).Field("_isGrounded").SetValue(false);
+		}
+
 		/// <summary>Tells Minecraft to put its player at X/Y/Z (new tile, or start) on a fresh collision store.</summary>
 		public void Resync(CollisionStreamer streamer) => Teleport(streamer);
 
-		void Teleport(CollisionStreamer streamer)
+		void Teleport(CollisionStreamer streamer, bool reanchor = false)
 		{
 			TeleportSeq++;
+			_reanchor = reanchor;
 			CollisionEpoch++;
 			streamer.Reset(CollisionEpoch);
 			_waitingForTeleport = true;
@@ -232,6 +302,7 @@ namespace OWCraft.Player
 			var body = Locator.GetPlayerBody();
 			if (body == null || Anchor?.Body == null || PlayerState.IsDead()) return false;
 			ScreenOpen = haveState && mc.Has(Proto.McScreenOpen);
+			if (haveState) SetInvincible(mc.Has(Proto.McInvulnerable));
 			Transform player = body.transform;
 
 			if (_waitingForTeleport)
@@ -268,7 +339,12 @@ namespace OWCraft.Player
 					}
 					if (_tickCount == 0)
 					{
-						_ticks[0] = new TickSample { Qpc = mc.TickQpc - (long)(mc.TickMs * qpcPerMs), X = mc.PrevX, Y = mc.PrevY, Z = mc.PrevZ, Eye = mc.TickEyeO > 0f ? mc.TickEyeO : cur.Eye };
+						// After a tile shift the tick's previous position is still on the old tile: start from this one.
+						double px = mc.PrevX - cur.X, py = mc.PrevY - cur.Y, pz = mc.PrevZ - cur.Z;
+						bool jumped = px * px + py * py + pz * pz > 8.0 * 8.0;
+						_ticks[0] = jumped
+							? new TickSample { Qpc = mc.TickQpc - (long)(mc.TickMs * qpcPerMs), X = cur.X, Y = cur.Y, Z = cur.Z, Eye = cur.Eye }
+							: new TickSample { Qpc = mc.TickQpc - (long)(mc.TickMs * qpcPerMs), X = mc.PrevX, Y = mc.PrevY, Z = mc.PrevZ, Eye = mc.TickEyeO > 0f ? mc.TickEyeO : cur.Eye };
 						_tickCount = 1;
 					}
 					if (_tickCount == _ticks.Length)
@@ -278,6 +354,9 @@ namespace OWCraft.Player
 					}
 					_ticks[_tickCount++] = cur;
 				}
+				// Right after a tile change Minecraft can confirm before its next tick: nothing to
+				// follow yet, so show its reported position as is.
+				if (_tickCount == 0) goto placed;
 				double ageMs = (now - _ticks[_tickCount - 1].Qpc) / qpcPerMs;
 				TickAgeMs = Math.Max(TickAgeMs, ageMs);
 				// The moment shown: one tick behind the latest stamp, like before, plus the arrival margin.
@@ -301,8 +380,22 @@ namespace OWCraft.Player
 					PinnedRelativeVelocity = mcVel.sqrMagnitude < 30f * 30f ? Anchor.WorldRotation * mcVel : Vector3.zero;
 				}
 			}
-			StandOn(Locator.GetPlayerController(), Anchor.Body);
-			if (Math.Abs(fx - Anchor.McX0) > AnchorGrid.Spacing / 2 || Math.Abs(fz - Anchor.McZ0) > AnchorGrid.Spacing / 2)
+		placed:
+			// Grounded only when Minecraft is: the game plays footsteps for a grounded player that moves,
+			// and they went on through elytra flights and falls.
+			bool onGround = mc.Has(Proto.McOnGround) || mc.Has(Proto.McSwimming);
+			_inAir = !onGround;
+			if (onGround) StandOn(Locator.GetPlayerController(), Anchor.Body);
+			else Lift(Locator.GetPlayerController());
+			if (OffTile(fx, fz) && !OffTile(mc.X, mc.Z))
+			{
+				// Smoothing between ticks from just before a tile shift: Minecraft itself is here already.
+				fx = mc.X;
+				fy = mc.Y;
+				fz = mc.Z;
+				_tickCount = 0;
+			}
+			if (OffTile(fx, fz))
 			{
 				// Minecraft put its player somewhere else (respawn, /tp): that's not on this planet. Back to
 				// where we were.
@@ -317,7 +410,7 @@ namespace OWCraft.Player
 			Vector3 feet = Anchor.McToWorld(fx, fy, fz);
 			// Upright on the planet: the heading follows the local "up" as we walk around the curve.
 			Transform planetT = Anchor.BodyTransform;
-			Vector3 radialUp = planetT.InverseTransformPoint(feet).normalized;
+			Vector3 radialUp = Anchor.Planet.Flat ? Anchor.LocalRotation * Vector3.up : planetT.InverseTransformPoint(feet).normalized;
 			_heading = Quaternion.FromToRotation(_heading * Vector3.up, radialUp) * _heading;
 			Quaternion rot = planetT.rotation * _heading;
 			player.SetPositionAndRotation(feet + rot * Vector3.up * _feetOffset, rot);
@@ -328,16 +421,36 @@ namespace OWCraft.Player
 			{
 				// The game stops at 80 degrees; Minecraft lets you look straight down (to pillar up).
 				// Our Update runs after the camera's FixedUpdate, so this is what gets drawn.
+				if (cam.transform == _camT) _camT.localPosition = _camLocal;
 				cam.transform.localRotation = Quaternion.AngleAxis(_lookPitch, Vector3.right);
 				// The camera exactly at Minecraft's eye, so what you aim at is what Minecraft hits.
 				float eye = _eye;
-				player.position += Anchor.McToWorld(fx, fy + eye, fz) - cam.transform.position;
+				Vector3 eyeWorld = Anchor.McToWorld(fx, fy + eye, fz);
+				player.position += eyeWorld - cam.transform.position;
 				McLookFrom(cam.transform.forward);
+				ThirdPerson = mc.CameraMode != 0 && cam.transform == _camT;
+				if (ThirdPerson) PlaceThirdPerson(cam.transform, eyeWorld, mc.CameraMode == 2, mc.CameraDistance > 0f ? mc.CameraDistance : 4f);
 			}
 
 			MaybeReanchor(feet, streamer);
 			return true;
 		}
+
+		/// <summary>
+		/// Minecraft's F5 views: behind the eye looking on, or in front looking back. Minecraft already
+		/// shortened the distance against its blocks; the planet's own geometry can be closer.
+		/// </summary>
+		static void PlaceThirdPerson(Transform cam, Vector3 eye, bool front, float distance)
+		{
+			Vector3 forward = cam.forward;
+			Vector3 dir = front ? forward : -forward;
+			if (Physics.SphereCast(eye, 0.1f, dir, out RaycastHit hit, distance, OWLayerMask.physicalMask, QueryTriggerInteraction.Ignore))
+				distance = Mathf.Max(0.3f, hit.distance);
+			cam.position = eye + dir * distance;
+			if (front) cam.rotation = Quaternion.LookRotation(-forward, cam.up);
+		}
+
+		bool OffTile(double x, double z) => Math.Abs(x - Anchor.McX0) > AnchorGrid.Spacing / 2 || Math.Abs(z - Anchor.McZ0) > AnchorGrid.Spacing / 2;
 
 		/// <summary>
 		/// Minecraft's world is flat; the planet isn't. Walking far enough moves us to the next tile, whose
@@ -346,20 +459,69 @@ namespace OWCraft.Player
 		void MaybeReanchor(Vector3 feetWorld, CollisionStreamer streamer)
 		{
 			double dx = X - Anchor.McX0, dz = Z - Anchor.McZ0;
-			float limit = Anchor.Planet.TileSize * ReanchorFraction;
-			if (dx * dx + dz * dz < limit * limit) return;
 			var planet = Anchor.Planet;
+			if (planet.Flat)
+			{
+				// Off the island: over to the planet it floats on (its own tile edge would be a wall).
+				if (dx * dx + dz * dz < FlatLeave * FlatLeave) return;
+				planet = AnchorGrid.Nearest(feetWorld);
+				if (planet == null) return;
+			}
+			else
+			{
+				float limit = planet.TileSize * ReanchorFraction;
+				// In the air (elytra), a tile's "up" may lean further from the planet's before we move on:
+				// every tile change is a jump to another part of Minecraft's world, with its chunks and
+				// collision loaded again, and at flying speed that was one a second (lag, rubber-banding).
+				// It snaps back to the nearest tile once you land.
+				if (_inAir) limit = Mathf.Max(limit, Mathf.Min(FlightReanchor, planet.Radius * FlightLean));
+				if (dx * dx + dz * dz < limit * limit) return;
+			}
 			var next = AnchorGrid.TileAt(planet, planet.Body.transform.InverseTransformPoint(feetWorld));
 			if (next == Anchor) return;
 
 			var old = Anchor;
 			Anchor = next;
+			if (next.Body != old.Body)
+			{
+				// Pinned to the new body now; the heading is kept in its local space.
+				_heading = Quaternion.Inverse(next.BodyTransform.rotation) * old.BodyTransform.rotation * _heading;
+				Locator.GetPlayerBody().transform.parent = next.BodyTransform;
+				PinnedTo = next.Body;
+			}
 			Anchor.WorldToMc(feetWorld, out X, out Y, out Z);
 			Y += 0.05;
 			var cam = Locator.GetPlayerCamera();
 			if (cam != null) McLookFrom(cam.transform.forward);
-			Teleport(streamer);
+			_shiftRot = ShiftRotation(old, Anchor, X, Y, Z);
+			Teleport(streamer, reanchor: true);
 			OWCraft.Log($"tile change {old} -> {Anchor}");
+		}
+
+		SharedLink.Matrix3 _shiftRot = new SharedLink.Matrix3 { M00 = 1, M11 = 1, M22 = 1 };
+
+		/// <summary>
+		/// How Minecraft directions in the old tile turn into the new tile's (around the player at x/y/z in
+		/// the new tile). Neighbouring tiles lean a few degrees apart on a small planet.
+		/// </summary>
+		static SharedLink.Matrix3 ShiftRotation(Anchor from, Anchor to, double x, double y, double z)
+		{
+			const double Step = 8.0;
+			to.WorldToMc(to.McToWorld(x, y, z), out double ox, out double oy, out double oz);
+			Vector3 pivot = to.McToWorld(x, y, z);
+			from.WorldToMc(pivot, out double fx, out double fy, out double fz);
+			var col = new Vector3[3];
+			for (int i = 0; i < 3; i++)
+			{
+				to.WorldToMc(from.McToWorld(fx + (i == 0 ? Step : 0), fy + (i == 1 ? Step : 0), fz + (i == 2 ? Step : 0)), out double nx, out double ny, out double nz);
+				col[i] = new Vector3((float)((nx - ox) / Step), (float)((ny - oy) / Step), (float)((nz - oz) / Step));
+			}
+			return new SharedLink.Matrix3
+			{
+				M00 = col[0].x, M01 = col[1].x, M02 = col[2].x,
+				M10 = col[0].y, M11 = col[1].y, M12 = col[2].y,
+				M20 = col[0].z, M21 = col[1].z, M22 = col[2].z,
+			};
 		}
 
 		/// <summary>Diagnostics: how far Minecraft's feet are above the game's own ground (negative: sunk in).</summary>
@@ -381,6 +543,9 @@ namespace OWCraft.Player
 			s.Yaw = Yaw;
 			s.Pitch = Pitch;
 			s.TeleportSeq = TeleportSeq;
+			// Minecraft keeps an airborne player's speed and flight across a tile change.
+			if (_reanchor) s.Flags |= Proto.HostReanchor;
+			s.ShiftRot = _shiftRot;
 			s.CollisionEpoch = CollisionEpoch;
 		}
 	}

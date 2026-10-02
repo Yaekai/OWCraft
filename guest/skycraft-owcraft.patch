@@ -1,5 +1,5 @@
 diff --git a/fabric/gradle.properties b/fabric/gradle.properties
-index 3d5a390..e205c81 100644
+index 3d5a390..68d8aa1 100644
 --- a/fabric/gradle.properties
 +++ b/fabric/gradle.properties
 @@ -10,7 +10,7 @@ loader_version=0.19.5
@@ -7,7 +7,7 @@ index 3d5a390..e205c81 100644
  
  # Mod Properties
 -version=0.1.2
-+version=0.1.2+owcraft.1
++version=0.1.2+owcraft.5
  group=dev.skycraft
  
  # Dependencies
@@ -240,10 +240,29 @@ index 0000000..97ebe7e
 +	}
 +}
 diff --git a/fabric/src/client/java/dev/skycraft/client/SkyClient.java b/fabric/src/client/java/dev/skycraft/client/SkyClient.java
-index 3127e6e..7719d13 100644
+index 3127e6e..54704a1 100644
 --- a/fabric/src/client/java/dev/skycraft/client/SkyClient.java
 +++ b/fabric/src/client/java/dev/skycraft/client/SkyClient.java
-@@ -68,6 +68,7 @@ public final class SkyClient {
+@@ -9,6 +9,7 @@ import net.minecraft.client.Camera;
+ import net.minecraft.client.Minecraft;
+ import net.minecraft.client.player.LocalPlayer;
+ import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.world.entity.Relative;
+ import net.minecraft.world.phys.Vec3;
+ import org.lwjgl.sdl.SDLVideo;
+ 
+@@ -35,6 +36,10 @@ public final class SkyClient {
+ 	private static int lastTeleportSeq = -1;
+ 	private static int teleportAck;
+ 	private static boolean teleportPending;
++	// OWCraft: a mid-air tile change in flight (see shiftPlayer): where it lands, and since when.
++	private static @org.jspecify.annotations.Nullable Vec3 shiftTarget;
++	private static int shiftSeq;
++	private static long shiftSince;
+ 	private static LocalPlayer lastPlayer;
+ 	private static Vec3 holdPos;
+ 	private static Vec3 unlinkedHold;
+@@ -68,6 +73,7 @@ public final class SkyClient {
  
  	/** Start of Minecraft.runTick: pull state and input from Skyrim before anything else runs. */
  	public static void beginFrame() {
@@ -251,7 +270,45 @@ index 3127e6e..7719d13 100644
  		SkyLink.poll();
  		quitWithSkyrim(Minecraft.getInstance());
  		if (START_HIDDEN && !startedHidden) {
-@@ -147,7 +148,7 @@ public final class SkyClient {
+@@ -129,10 +135,34 @@ public final class SkyClient {
+ 			teleportPending = true;
+ 		}
+ 		if (teleportPending && sky.inGame() && !sky.loading()) {
+-			requestTeleport(minecraft, sky.x, sky.y, sky.z, sky.yaw, sky.pitch);
+-			teleportAck = sky.teleportSeq;
+ 			teleportPending = false;
+-			holdPos = new Vec3(sky.x, sky.y, sky.z);
++			if (sky.reanchor() && !player.onGround() && holdPos == null && shiftTarget == null
++				&& minecraft.getSingleplayerServer() != null) {
++				carryAround(minecraft, player.position(), new Vec3(sky.x, sky.y, sky.z));
++				shiftPlayer(minecraft, sky.x - player.getX(), sky.y - player.getY(), sky.z - player.getZ());
++				shiftTarget = new Vec3(sky.x, sky.y, sky.z);
++				shiftSeq = sky.teleportSeq;
++				shiftSince = System.currentTimeMillis();
++			} else {
++				shiftTarget = null;
++				if (sky.reanchor()) {
++					carryAround(minecraft, player.position(), new Vec3(sky.x, sky.y, sky.z));
++				}
++				requestTeleport(minecraft, sky.x, sky.y, sky.z, sky.yaw, sky.pitch);
++				teleportAck = sky.teleportSeq;
++				holdPos = new Vec3(sky.x, sky.y, sky.z);
++			}
++		}
++		if (shiftTarget != null) {
++			// Tile patches sit 512 blocks apart: within 64 of the target, the shift has landed.
++			if (player.position().distanceToSqr(shiftTarget) < 64 * 64) {
++				teleportAck = shiftSeq;
++				shiftTarget = null;
++			} else if (System.currentTimeMillis() - shiftSince > 1000) {
++				SkyCraft.LOG.warn("SkyCraft: tile shift didn't arrive; teleporting instead");
++				shiftTarget = null;
++				teleportPending = true;
++			}
+ 		}
+ 
+ 		// Look direction is driven by Skyrim (zero-latency camera); MC uses it for everything else.
+@@ -147,7 +177,7 @@ public final class SkyClient {
  	// Minecraft is started with Skyrim (the SKSE plugin launches it), so it goes when that Skyrim has
  	// closed for good: saved and shut down the normal way. -Dskycraft.quitWithSkyrim=false keeps it
  	// running instead (development: restarting Skyrim without restarting Minecraft).
@@ -260,7 +317,7 @@ index 3127e6e..7719d13 100644
  	private static long skyrimGoneSince;
  	private static long nextSkyrimCheck;
  	// Started hidden by Skyrim but never connected: nobody can see or use this Minecraft, and it
-@@ -183,6 +184,7 @@ public final class SkyClient {
+@@ -183,6 +213,7 @@ public final class SkyClient {
  
  	/** Called at the end of every client tick. */
  	public static void clientTick(Minecraft minecraft) {
@@ -268,7 +325,60 @@ index 3127e6e..7719d13 100644
  		MirrorWorld.tick(minecraft);
  		DiscordPresence.tick(minecraft);
  		SkyDigClient.tick(minecraft);
-@@ -395,7 +397,9 @@ public final class SkyClient {
+@@ -304,6 +335,41 @@ public final class SkyClient {
+ 		return !Double.isNaN(ground) && ground > pos.y ? new Vec3(pos.x, ground, pos.z) : pos;
+ 	}
+ 
++	/**
++	 * OWCraft: a tile change while airborne (elytra, a jump, a fall). It's the same spot in Outer Wilds,
++	 * so the player keeps its speed and flight: a relative teleport moves server and client by the
++	 * same offset (no snap back to where the server last saw us) and leaves velocity alone. No hold
++	 * either: in the air there's nothing to fall through, and waiting for ground below froze elytra
++	 * flights for up to 6 s at every tile.
++	 */
++	private static void shiftPlayer(Minecraft minecraft, double dx, double dy, double dz) {
++		var server = minecraft.getSingleplayerServer();
++		var uuid = minecraft.player.getUUID();
++		server.execute(() -> {
++			ServerPlayer sp = server.getPlayerList().getPlayer(uuid);
++			if (sp != null) {
++				sp.teleportTo(sp.level(), dx, dy, dz, Relative.ALL, 0f, 0f, false);
++			}
++		});
++		SkyCraft.LOG.info("SkyCraft: tile shift by {} {} {}", String.format("%.1f", dx), String.format("%.1f", dy), String.format("%.1f", dz));
++	}
++
++	/** OWCraft: a tile change takes the mobs and items around the player along (see TileCarry). */
++	private static void carryAround(Minecraft minecraft, Vec3 from, Vec3 to) {
++		var server = minecraft.getSingleplayerServer();
++		if (server == null) {
++			return;
++		}
++		float[] rot = sky.shiftRot.clone();
++		var uuid = minecraft.player.getUUID();
++		server.execute(() -> {
++			ServerPlayer sp = server.getPlayerList().getPlayer(uuid);
++			if (sp != null) {
++				dev.skycraft.world.TileCarry.carry(sp.level(), from, to, rot);
++			}
++		});
++	}
++
+ 	private static void requestTeleport(Minecraft minecraft, double x, double y, double z, float yaw, float pitch) {
+ 		LocalPlayer player = minecraft.player;
+ 		player.setPos(x, y, z);
+@@ -356,6 +422,10 @@ public final class SkyClient {
+ 			if (player.getAbilities().flying) {
+ 				flags |= Proto.MC_FLYING;
+ 			}
++			// OWCraft: Creative and Spectator can't be hurt; the Outer Wilds body follows suit.
++			if (player.getAbilities().invulnerable) {
++				flags |= Proto.MC_INVULNERABLE;
++			}
+ 			mc.x = feet.x;
+ 			mc.y = feet.y;
+ 			mc.z = feet.z;
+@@ -395,7 +465,9 @@ public final class SkyClient {
  					SkyCraft.LOG.error("SkyCraft: world export failed", e);
  				}
  			}
@@ -278,7 +388,7 @@ index 3127e6e..7719d13 100644
  		}
  	}
  
-@@ -408,6 +412,7 @@ public final class SkyClient {
+@@ -408,6 +480,7 @@ public final class SkyClient {
  			return; // Skyrim is paused (menu / alt-tab): don't block every frame waiting for it
  		}
  		skyrimStalled = false;
@@ -286,7 +396,7 @@ index 3127e6e..7719d13 100644
  		long deadline = System.nanoTime() + 25_000_000L;
  		// SkyState.seq advances by 2 per Skyrim frame (odd while writing).
  		while ((SkyLink.skyStateSeq() >>> 1) == lastPacedSeq && System.nanoTime() < deadline) {
-@@ -419,6 +424,7 @@ public final class SkyClient {
+@@ -419,6 +492,7 @@ public final class SkyClient {
  		int seqNow = SkyLink.skyStateSeq() >>> 1;
  		skyrimStalled = seqNow == lastPacedSeq;
  		lastPacedSeq = seqNow;
@@ -344,6 +454,22 @@ index 7474550..d6aa851 100644
  	@Inject(method = "renderFrame", at = @At("TAIL"))
  	private void skycraft$pace(boolean advanceGameTime, CallbackInfo ci) {
  		SkyClient.paceFrame();
+diff --git a/fabric/src/client/java/dev/skycraft/client/render/AvatarExporter.java b/fabric/src/client/java/dev/skycraft/client/render/AvatarExporter.java
+index 5442db6..ac550d0 100644
+--- a/fabric/src/client/java/dev/skycraft/client/render/AvatarExporter.java
++++ b/fabric/src/client/java/dev/skycraft/client/render/AvatarExporter.java
+@@ -294,7 +294,10 @@ final class AvatarExporter implements SubmitNodeCollector {
+ 		PoseStack pose = new PoseStack();
+ 		int entities = 0;
+ 		for (Entity e : level.entitiesForRendering()) {
+-			if (e == player || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof SkyrimActorEntity
++			// OWCraft: arrows, tridents, dropped and thrown items come through here too. Outer Wilds
++			// doesn't read WorldExporter's lighter entity table, so they were invisible (only an
++			// arrow's particle trail showed).
++			if (e == player || e instanceof SkyrimActorEntity
+ 				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || entities >= SCENE_MAX_ENTITIES) {
+ 				continue;
+ 			}
 diff --git a/fabric/src/client/java/dev/skycraft/client/render/WorldExporter.java b/fabric/src/client/java/dev/skycraft/client/render/WorldExporter.java
 index 9f909ce..2410e9f 100644
 --- a/fabric/src/client/java/dev/skycraft/client/render/WorldExporter.java
@@ -369,8 +495,20 @@ index 9f909ce..2410e9f 100644
  	}
  
  	private static void resendEverything(Minecraft minecraft, ClientLevel level) {
+diff --git a/fabric/src/main/java/dev/skycraft/SkyCraft.java b/fabric/src/main/java/dev/skycraft/SkyCraft.java
+index 1670d74..46d6fe9 100644
+--- a/fabric/src/main/java/dev/skycraft/SkyCraft.java
++++ b/fabric/src/main/java/dev/skycraft/SkyCraft.java
+@@ -25,6 +25,7 @@ public final class SkyCraft implements ModInitializer {
+ 		dev.skycraft.net.SkyNet.init();
+ 		dev.skycraft.world.SkyDig.init();
+ 		ServerLifecycleEvents.SERVER_STARTED.register(SkyCraft::configureServer);
++		dev.skycraft.world.TileCarry.register(); // OWCraft
+ 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+ 			giveStarterKit(handler.getPlayer());
+ 			giveBuilderKit(handler.getPlayer());
 diff --git a/fabric/src/main/java/dev/skycraft/link/Proto.java b/fabric/src/main/java/dev/skycraft/link/Proto.java
-index 26b7fe6..34dba58 100644
+index 26b7fe6..cafed3f 100644
 --- a/fabric/src/main/java/dev/skycraft/link/Proto.java
 +++ b/fabric/src/main/java/dev/skycraft/link/Proto.java
 @@ -11,7 +11,7 @@ public final class Proto {
@@ -382,6 +520,230 @@ index 26b7fe6..34dba58 100644
  	public static final double UNITS_PER_BLOCK = 70.0;
  
  	public static final long OFF_HEADER = 0x0;
+@@ -144,10 +144,14 @@ public final class Proto {
+ 	public static final long SS_VIEWPORT_W = 0x34;
+ 	public static final long SS_VIEWPORT_H = 0x38;
+ 	public static final long SS_GAME_HOUR = 0x3C;
++	// OWCraft: the last tile change as a row-major 3x3 rotation, old tile's axes -> new tile's.
++	public static final long SS_SHIFT_ROT = 0x40;
+ 
+ 	public static final int SKY_IN_GAME = 1;
+ 	public static final int SKY_MENU_OPEN = 1 << 1;
+ 	public static final int SKY_LOADING = 1 << 2;
++	// OWCraft: this teleport is a tile change. Same spot in the host's world, new Minecraft coordinates.
++	public static final int SKY_REANCHOR = 1 << 3;
+ 
+ 	// McState (relative to OFF_MC_STATE)
+ 	public static final long MS_SEQ = 0x00;
+@@ -189,6 +193,8 @@ public final class Proto {
+ 	public static final int MC_DEAD = 1 << 5;
+ 	public static final int MC_SWIMMING = 1 << 6;
+ 	public static final int MC_FLYING = 1 << 7;
++	// OWCraft: the player can't be hurt (Creative, Spectator).
++	public static final int MC_INVULNERABLE = 1 << 8;
+ 
+ 	// Overlay
+ 	public static final long OC_STATE = 0x00;
+diff --git a/fabric/src/main/java/dev/skycraft/link/SkyLink.java b/fabric/src/main/java/dev/skycraft/link/SkyLink.java
+index 6b9b166..787057e 100644
+--- a/fabric/src/main/java/dev/skycraft/link/SkyLink.java
++++ b/fabric/src/main/java/dev/skycraft/link/SkyLink.java
+@@ -202,6 +202,7 @@ public final class SkyLink {
+ 		public int teleportSeq;
+ 		public int viewportW, viewportH;
+ 		public float gameHour;
++		public final float[] shiftRot = new float[9];
+ 
+ 		public boolean inGame() {
+ 			return (this.flags & SKY_IN_GAME) != 0;
+@@ -214,6 +215,10 @@ public final class SkyLink {
+ 		public boolean loading() {
+ 			return (this.flags & SKY_LOADING) != 0;
+ 		}
++
++		public boolean reanchor() {
++			return (this.flags & SKY_REANCHOR) != 0;
++		}
+ 	}
+ 
+ 	/** Seqlock read of SkyState into {@code out}. Returns false if the link is down. */
+@@ -283,6 +288,9 @@ public final class SkyLink {
+ 			out.viewportW = s.get(JAVA_INT, b + SS_VIEWPORT_W);
+ 			out.viewportH = s.get(JAVA_INT, b + SS_VIEWPORT_H);
+ 			out.gameHour = s.get(JAVA_FLOAT, b + SS_GAME_HOUR);
++			for (int i = 0; i < 9; i++) {
++				out.shiftRot[i] = s.get(JAVA_FLOAT, b + SS_SHIFT_ROT + i * 4);
++			}
+ 			VarHandle.loadLoadFence();
+ 			int seq2 = (int) INT.getAcquire(s, b + SS_SEQ);
+ 			if (seq1 == seq2) {
+diff --git a/fabric/src/main/java/dev/skycraft/mixin/PathfindingContextMixin.java b/fabric/src/main/java/dev/skycraft/mixin/PathfindingContextMixin.java
+new file mode 100644
+index 0000000..e331424
+--- /dev/null
++++ b/fabric/src/main/java/dev/skycraft/mixin/PathfindingContextMixin.java
+@@ -0,0 +1,36 @@
++package dev.skycraft.mixin;
++
++import dev.skycraft.world.SkyCollision;
++import net.minecraft.core.BlockPos;
++import net.minecraft.world.level.CollisionGetter;
++import net.minecraft.world.level.pathfinder.PathType;
++import net.minecraft.world.level.pathfinder.PathfindingContext;
++import org.spongepowered.asm.mixin.Final;
++import org.spongepowered.asm.mixin.Mixin;
++import org.spongepowered.asm.mixin.Shadow;
++import org.spongepowered.asm.mixin.injection.At;
++import org.spongepowered.asm.mixin.injection.Inject;
++import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
++
++/**
++ * OWCraft: mobs path over the planet's surface. Pathfinding only looks at blocks, and the planet
++ * ground is air to it, so mobs found no floor anywhere and stood still. Air under a planet surface
++ * counts as solid here. Not cached: the surface streams in after the mob may have looked.
++ */
++@Mixin(PathfindingContext.class)
++public abstract class PathfindingContextMixin {
++	@Shadow
++	@Final
++	private CollisionGetter level;
++
++	@Inject(method = "getPathTypeFromState(III)Lnet/minecraft/world/level/pathfinder/PathType;", at = @At("HEAD"), cancellable = true)
++	private void skycraft$planetGround(int x, int y, int z, CallbackInfoReturnable<PathType> cir) {
++		if (!SkyCollision.active()) {
++			return;
++		}
++		BlockPos pos = new BlockPos(x, y, z);
++		if (level.getBlockState(pos).isAir()) {
++			cir.setReturnValue(SkyCollision.supportsFromBelow(pos.above()) ? PathType.BLOCKED : PathType.OPEN);
++		}
++	}
++}
+diff --git a/fabric/src/main/java/dev/skycraft/world/TileCarry.java b/fabric/src/main/java/dev/skycraft/world/TileCarry.java
+new file mode 100644
+index 0000000..e715cca
+--- /dev/null
++++ b/fabric/src/main/java/dev/skycraft/world/TileCarry.java
+@@ -0,0 +1,119 @@
++package dev.skycraft.world;
++
++import dev.skycraft.SkyCraft;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Set;
++import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.item.ItemEntity;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.phys.AABB;
++import net.minecraft.world.phys.Vec3;
++
++/**
++ * OWCraft: carries the mobs and items around the player across a tile change.
++ *
++ * Each patch of an Outer Wilds planet has its own area of the Minecraft world, 512 blocks from the
++ * next. A tile change moves the player there; whatever was nearby stayed behind, lost its ground
++ * (the collision is cleared) and despawned at that distance. So they move too: same offset from
++ * the player, turned by the angle between the two tiles, then held still until the new tile's
++ * collision under them has arrived.
++ *
++ * Further away there's no planet ground at all (it only streams in around the player): mobs and
++ * items out there stay where they are instead of falling into the void.
++ */
++public final class TileCarry {
++	private static final double RADIUS = 48;
++	private static final long HOLD_MS = 4000;
++	// The two tiles' 1/8-block collision grids don't line up: start a little above the ground.
++	private static final double LIFT = 0.25;
++
++	private record Held(Entity entity, Vec3 pos, long since) {
++	}
++
++	private static final List<Held> held = new ArrayList<>();
++	private TileCarry() {
++	}
++
++	/** At startup. */
++	public static void register() {
++		ServerTickEvents.END_SERVER_TICK.register(TileCarry::tick);
++	}
++
++	/**
++	 * Server thread. Moves entities within RADIUS of {@code from} (old tile) to around {@code to}
++	 * (new tile); {@code rot} is the row-major rotation between the tiles' axes (all zero: none).
++	 */
++	public static void carry(ServerLevel level, Vec3 from, Vec3 to, float[] rot) {
++		float[] r = rot;
++		if (r[0] == 0f && r[4] == 0f && r[8] == 0f) {
++			r = new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
++		}
++		long now = System.currentTimeMillis();
++		int moved = 0;
++		var box = new AABB(from, from).inflate(RADIUS);
++		for (Entity e : level.getEntities((Entity) null, box, e -> !(e instanceof Player) && !e.isPassenger() && e.isAlive())) {
++			Vec3 d = e.position().subtract(from);
++			double x = to.x + r[0] * d.x + r[1] * d.y + r[2] * d.z;
++			double y = to.y + r[3] * d.x + r[4] * d.y + r[5] * d.z + LIFT;
++			double z = to.z + r[6] * d.x + r[7] * d.y + r[8] * d.z;
++			// Minecraft's forward for a yaw is (-sin, 0, cos): turn it with the tiles.
++			double yaw = Math.toRadians(e.getYRot());
++			double fx = -Math.sin(yaw), fz = Math.cos(yaw);
++			double gx = r[0] * fx + r[2] * fz, gz = r[6] * fx + r[8] * fz;
++			float newYaw = (float) Math.toDegrees(Math.atan2(-gx, gz));
++			e.teleportTo(level, x, y, z, Set.of(), newYaw, e.getXRot(), false);
++			e.setDeltaMovement(Vec3.ZERO);
++			e.setYHeadRot(newYaw);
++			held.add(new Held(e, new Vec3(x, y, z), now));
++			moved++;
++		}
++		if (moved > 0) {
++			SkyCraft.LOG.info("SkyCraft: carried {} entities to the new tile", moved);
++		}
++	}
++
++	private static void tick(MinecraftServer server) {
++		if (SkyCollision.active()) {
++			for (ServerLevel level : server.getAllLevels()) {
++				for (Entity e : level.getAllEntities()) {
++					if ((e instanceof LivingEntity || e instanceof ItemEntity) && !(e instanceof Player) && !e.isPassenger()
++						&& !e.onGround() && !e.isNoGravity() && offTheMap(e)) {
++						e.setDeltaMovement(Vec3.ZERO);
++						e.setPos(e.xo, e.yo, e.zo);
++						e.resetFallDistance();
++					}
++				}
++			}
++		}
++		if (held.isEmpty()) {
++			return;
++		}
++		long now = System.currentTimeMillis();
++		held.removeIf(h -> {
++			Entity e = h.entity();
++			if (e.isRemoved() || now - h.since() > HOLD_MS) {
++				return true;
++			}
++			int bx = (int) Math.floor(h.pos().x), by = (int) Math.floor(h.pos().y), bz = (int) Math.floor(h.pos().z);
++			if (SkyCollision.isKnown(bx, by, bz) && SkyCollision.isKnown(bx, by - 1, bz)
++				&& SkyCollision.isKnown(bx, by - SkyCollision.REGION_SIZE, bz)) {
++				return true;
++			}
++			e.setDeltaMovement(Vec3.ZERO);
++			e.setPos(h.pos().x, h.pos().y, h.pos().z);
++			e.resetFallDistance();
++			return false;
++		});
++	}
++
++	/** No planet collision here or just below: nothing to land on yet. */
++	private static boolean offTheMap(Entity e) {
++		int bx = (int) Math.floor(e.getX()), by = (int) Math.floor(e.getY()), bz = (int) Math.floor(e.getZ());
++		return !SkyCollision.isKnown(bx, by, bz) || !SkyCollision.isKnown(bx, by - SkyCollision.REGION_SIZE, bz);
++	}
++}
 diff --git a/fabric/src/main/resources/fabric.mod.json b/fabric/src/main/resources/fabric.mod.json
 index 1e96664..c53af93 100644
 --- a/fabric/src/main/resources/fabric.mod.json
@@ -397,3 +759,15 @@ index 1e96664..c53af93 100644
    "authors": ["chasmlol"],
    "contact": {
      "sources": "https://github.com/chasmlol/SkyCraft"
+diff --git a/fabric/src/main/resources/skycraft.mixins.json b/fabric/src/main/resources/skycraft.mixins.json
+index 5ea8e5b..d609f8c 100644
+--- a/fabric/src/main/resources/skycraft.mixins.json
++++ b/fabric/src/main/resources/skycraft.mixins.json
+@@ -13,6 +13,7 @@
+     "FlowingFluidMixin",
+     "ItemMixin",
+     "MinecraftServerFlightMixin",
++    "PathfindingContextMixin",
+     "PlayerEdgeMixin",
+     "PressurePlateMixin",
+     "ProjectileMixin",

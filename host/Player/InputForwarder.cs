@@ -49,8 +49,6 @@ namespace OWCraft.Player
 			m[Key.Slash] = 56;
 			m[Key.CapsLock] = 57;
 			for (int i = 0; i < 12; i++) m[Key.F1 + i] = (ushort)(58 + i);
-			// Not F5: Outer Wilds' view is always first person; Minecraft's third person only hides the hand.
-			m.Remove(Key.F5);
 			m.Remove(Key.F7); // ours: clear the blocks around you
 			m[Key.Insert] = 73;
 			m[Key.Home] = 74;

@@ -52,7 +52,6 @@ namespace OWCraft
 		bool _wasGuestAlive;
 		float _guestLostAt = -1f;
 		float _nextStatsAt;
-		float _nextCameraFixAt;
 		long _mcFramesAtStats;
 		int _overlayAtStats;
 		float _statsStartedAt;
@@ -203,14 +202,6 @@ namespace OWCraft
 					bool screen = haveState && mc.Has(Proto.McScreenOpen);
 					Vector2 delta = _input.Update(_link, screen, Screen.width, Screen.height);
 					if (!screen) _driver.Look(delta, haveState && mc.Sensitivity > 0 ? mc.Sensitivity : 0.5f);
-					// Minecraft in third person (F5, or a saved option) hides the hand: back to first person.
-					if (haveState && mc.CameraMode != 0 && Time.unscaledTime >= _nextCameraFixAt)
-					{
-						_nextCameraFixAt = Time.unscaledTime + 0.5f;
-						Log($"Minecraft camera mode {mc.CameraMode}: switching it back to first person");
-						_link.PushInput(Proto.InKey, InputForwarder.HidF5, 1);
-						_link.PushInput(Proto.InKey, InputForwarder.HidF5, 0);
-					}
 					if (kb != null && kb[Key.F7].wasPressedThisFrame && haveState) ClearBlocks();
 					if (haveState && !screen && !_commands.Busy && !_sized && mc.Has(Proto.McInWorld))
 					{
@@ -284,6 +275,7 @@ namespace OWCraft
 
 			_partClock.Restart();
 			if (_inSolarSystem) _blocks.Update(_link);
+			_blocks.Scene.PlaceAvatar(_driver.Anchor, _driver.X, _driver.Y, _driver.Z, _driver.Active && _driver.ThirdPerson);
 			EndPart(2);
 			PumpEvents();
 			_overlay.Visible = _driver.Active;
